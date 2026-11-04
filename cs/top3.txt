@@ -41,6 +41,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Stop Loss (Puntos)", Order = 3, GroupName = "Parámetros de Operación", Description = "Distancia del Stop Loss en puntos (ej. 2.0 para 8 ticks en MES)")]
         public double StopLossPuntos { get; set; }
 
+        [NinjaScriptProperty]
+        [Range(1, double.MaxValue)]
+        [Display(Name = "Máxima Pérdida ($)", Order = 4, GroupName = "Parámetros de Operación", Description = "Límite máximo de pérdida monetaria permitida por trade")]
+        public double MaxPerdidaDolares { get; set; }
+
 
         // --- PARAMETROS DE ENTRADA Y RIESGO ---
         private const double RATIO_RB_CONTEXTO_CAMBIADO = 1.00;
@@ -98,10 +103,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 StopTargetHandling = StopTargetHandling.PerEntryExecution;
                 BarsRequiredToTrade = 100;
 
-                // VALOR POR DEFECTO: 1 Contrato (Puedes cambiarlo en la interfaz a 2, 10, etc.)
+                // VALOR POR DEFECTO: 5 Contratos
                 CantidadContratos = 5;
                 RATIO_RB_NORMAL = 1.4;
                 StopLossPuntos = 2.0;
+                MaxPerdidaDolares = 100.0; // Límite de $100 por operación
             }
             else if (State == State.Configure)
             {
@@ -298,18 +304,26 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        private void ColocarOrdenesLimite(bool esCompra)
+       private void ColocarOrdenesLimite(bool esCompra)
         {
             double rango = Math.Abs(swingExtremo15M - swingOrigen15M);
             if (rango <= 0) return;
+
+            // --- CALCULO AUTOMATICO DEL STOP LOSS BASADO EN LOS $100 MAXIMOS ---
+            // InstrumentValue por punto: ES = $50 por punto, MES = $5 por punto
+            double valorPunto = Instrument.MasterInstrument.PointValue;
+            double maxPuntosPermitidos = MaxPerdidaDolares / (valorPunto * CantidadContratos);
+            
+            // Usamos el menor entre lo que configuró el usuario y lo que permiten los $100 máximos
+            double stopEfectivo = Math.Min(StopLossPuntos, maxPuntosPermitidos);
 
             if (esCompra)
             {
                 double nivel0758 = swingExtremo15M - (rango * 0.758);
                 double nivel0886 = swingExtremo15M - (rango * 0.886);
 
-                double stop0758 = nivel0886 - StopLossPuntos;
-                double stop0886 = swingOrigen15M - StopLossPuntos;
+                double stop0758 = nivel0886 - stopEfectivo;
+                double stop0886 = swingOrigen15M - stopEfectivo;
 
                 double riesgopuntos0758 = nivel0758 - stop0758;
                 double riesgopuntos0886 = nivel0886 - stop0886;
@@ -323,7 +337,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SetStopLoss("Fibo_0886_Long", CalculationMode.Price, stop0886, false);
                 SetProfitTarget("Fibo_0886_Long", CalculationMode.Price, target0886);
 
-                // SE APLICA LA VARIABLE CantidadContratos
                 EnterLongLimit(0, true, CantidadContratos, nivel0758, "Fibo_0758_Long");
                 EnterLongLimit(0, true, CantidadContratos, nivel0886, "Fibo_0886_Long");
 
@@ -334,8 +347,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 double nivel0758 = swingExtremo15M + (rango * 0.758);
                 double nivel0886 = swingExtremo15M + (rango * 0.886);
 
-                double stop0758 = nivel0886 + StopLossPuntos;
-                double stop0886 = swingOrigen15M + StopLossPuntos;
+                double stop0758 = nivel0886 + stopEfectivo;
+                double stop0886 = swingOrigen15M + stopEfectivo;
 
                 double riesgopuntos0758 = stop0758 - nivel0758;
                 double riesgopuntos0886 = stop0886 - nivel0886;
@@ -349,7 +362,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SetStopLoss("Fibo_0886_Short", CalculationMode.Price, stop0886, false);
                 SetProfitTarget("Fibo_0886_Short", CalculationMode.Price, target0886);
 
-                // SE APLICA LA VARIABLE CantidadContratos
                 EnterShortLimit(0, true, CantidadContratos, nivel0758, "Fibo_0758_Short");
                 EnterShortLimit(0, true, CantidadContratos, nivel0886, "Fibo_0886_Short");
 
@@ -357,33 +369,35 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        private void ProcesarAgregado1M()
+       private void ProcesarAgregado1M()
         {
             double precio1M = Closes[0][0];
 
+            double valorPunto = Instrument.MasterInstrument.PointValue;
+            double maxPuntosPermitidos = MaxPerdidaDolares / (valorPunto * CantidadContratos);
+            double stopEfectivo = Math.Min(StopLossPuntos, maxPuntosPermitidos);
+
             if (contextoAlcista1H && precio1M > ema50_1M[0] && precio1M > ema100_1M[0] && Highs[0][0] > Highs[0][1])
             {
-                double stopHeredado = swingOrigen15M - StopLossPuntos;
+                double stopHeredado = swingOrigen15M - stopEfectivo;
                 double riesgoPuntos = precio1M - stopHeredado;
                 double targetAgregado = precio1M + (riesgoPuntos * RATIO_RB_NORMAL);
 
                 SetStopLoss("Agregado_1M_Long", CalculationMode.Price, stopHeredado, false);
                 SetProfitTarget("Agregado_1M_Long", CalculationMode.Price, targetAgregado);
 
-                // SE APLICA LA VARIABLE CantidadContratos
                 EnterLong(CantidadContratos, "Agregado_1M_Long");
                 agregadoEjecutado = true;
             }
             else if (contextoBajista1H && precio1M < ema50_1M[0] && precio1M < ema100_1M[0] && Lows[0][0] < Lows[0][1])
             {
-                double stopHeredado = swingOrigen15M + StopLossPuntos;
+                double stopHeredado = swingOrigen15M + stopEfectivo;
                 double riesgoPuntos = stopHeredado - precio1M;
                 double targetAgregado = precio1M - (riesgoPuntos * RATIO_RB_NORMAL);
 
                 SetStopLoss("Agregado_1M_Short", CalculationMode.Price, stopHeredado, false);
                 SetProfitTarget("Agregado_1M_Short", CalculationMode.Price, targetAgregado);
 
-                // SE APLICA LA VARIABLE CantidadContratos
                 EnterShort(CantidadContratos, "Agregado_1M_Short");
                 agregadoEjecutado = true;
             }

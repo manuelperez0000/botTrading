@@ -1,5 +1,8 @@
 # Logs
 logs
+
+backend/node_modules
+
 *.log
 npm-debug.log*
 yarn-debug.log*
